@@ -41,6 +41,7 @@ optuna.visualization.matplotlib.plot_optimization_history(study)
 ![alt text](https://github.com/tblume1992/Seance/blob/main/static/seance_study.png?raw=true "Study")
 ## passing off best params for forecasts
 ```
+from Seance.Forecaster import Forecaster
 seance = Forecaster()
 output = seance.fit(series,
                     target_column='y',
