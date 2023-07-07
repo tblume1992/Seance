@@ -80,9 +80,9 @@ class PreProcess:
         if self.scale:
             df = df.groupby('Seance ID').apply(self.trans)
         if self.outlier_cap is not None:
-            df[self.target_column] = df.groupby('Seance ID')[self.target_column].transform(cap_outliers,
-                                                                              outlier_cap=self.outlier_cap,
-                                                                            )
+            df[self.target_column] = df.groupby('Seance ID')[self.target_column]\
+                                        .transform(cap_outliers,
+                                        outlier_cap=self.outlier_cap)
         return df
 
 

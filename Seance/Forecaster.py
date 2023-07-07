@@ -118,6 +118,7 @@ class Forecaster:
                 seasonal_df.append(fourier_basis)
             seasonal_df = pd.concat(seasonal_df)
             seasonal_df[date_column] = self.time_periods.values
+            seasonal_df[date_column] = pd.to_datetime(seasonal_df[date_column]).dt.tz_localize(None)
             max_period = max(self.seasonal_period)
         else:
             max_period = None
@@ -136,6 +137,9 @@ class Forecaster:
                                           run_dict=self.run_dict)
         self.processed_df = self.processor.process(df)
         self.processed_df = self.processed_df.sort_values(['Seance ID', date_column])
+        self.processed_df[date_column] = self.processed_df[date_column].dt.tz_localize(None)
+        self.last_dates = self.processed_df[['Seance ID', date_column]].sort_values([date_column]).groupby('Seance ID').tail(1)
+        self.last_dates = self.last_dates.sort_values('Seance ID')
         if self.n_basis is not None and self.n_basis:
             self.basis_list = []
             basis = self.processed_df.groupby('Seance ID')[target_column].apply(self.linear_basis)
@@ -190,13 +194,22 @@ class Forecaster:
 
     def predict(self, forecast_horizon):
         self.forecast_horizon = forecast_horizon
-        dates = pd.date_range(start=self.time_periods.iloc[-1],
-                              freq=self.freq,
-                              periods=forecast_horizon + 1)[1:]
-        future_dates = pd.DataFrame(dates,
-                                    columns=[self.date_column])
+        future_dates = pd.date_range(start=self.time_periods.iloc[-1],
+                                     freq=self.freq,
+                                     periods=forecast_horizon + 1)[1:]
+        full_dates = pd.concat([self.time_periods, pd.Series(future_dates)])
         id_df = self.run_dict['global']['ID Mapping']
-        pred_X = pd.merge(id_df, future_dates, how='cross')
+        uids = pd.Series(np.repeat(id_df['Seance ID'].values, forecast_horizon),
+                         name='Seance ID',
+                         dtype='category')
+        pred_dates = []
+        for date in self.last_dates[self.date_column]:
+            pred_dates += list(pd.date_range(start=date,
+                              freq=self.freq,
+                              periods=forecast_horizon + 1)[1:])
+        pred_X = pd.DataFrame(uids, columns=['Seance ID'])
+        pred_X[self.date_column] = pred_dates
+        pred_X[self.date_column] = pred_X[self.date_column].dt.tz_localize(None)
         if self.seasonal_period is not None:
             seasonal_df = []
             for i in self.seasonal_period:
@@ -208,7 +221,7 @@ class Forecaster:
                 fourier_basis = pd.DataFrame(fourier_basis, columns=column_names).astype(float)
                 seasonal_df.append(fourier_basis)
             seasonal_df = pd.concat(seasonal_df)
-            seasonal_df[self.date_column] = future_dates
+            seasonal_df[self.date_column] = full_dates.values
             pred_X = pred_X.merge(seasonal_df, on=self.date_column)
         if self.n_basis is not None and self.n_basis:
             basis = pred_X.groupby('Seance ID').apply(self.future_linear_basis)
@@ -217,6 +230,7 @@ class Forecaster:
             self.dynamic_dfs = [pred_X]
         else:
             self.dynamic_dfs = None
+        self.pred_X = pred_X
         predicted = self.mlforecast.predict(horizon=forecast_horizon,
                                             dynamic_dfs=self.dynamic_dfs)
         predicted = predicted.merge(self.run_dict['global']['ID Mapping'],
@@ -233,7 +247,6 @@ class Forecaster:
         lgb.plot_importance(self.mlforecast.models_['LGBMRegressor'],
                             max_num_features=max_num_features)
         return
-
 
 
 

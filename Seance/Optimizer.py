@@ -6,6 +6,7 @@ import numpy as np
 import optuna
 from numba import njit
 import numpy as np
+import pandas as pd
 from Seance.Forecaster import Forecaster
 # optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -24,12 +25,18 @@ class Optimize:
                  id_column,
                  freq,
                  test_size,
+                 categorical_columns=None,
                  metric='mse',
                  seasonal_period=0,
                  n_folds=1, #TODO
                  n_trials=100,
                  max_n_estimators=500,
                  ar_lags=None,
+                 scale_types=['log','standard','minmax','robust_boxcox','none'],
+                 min_bagging_pct=.1,
+                 max_bagging_pct=1.0,
+                 min_feature_fraction=.1,
+                 max_n_basis=25,
                  timeout=None):
         self.df = df.sort_values([id_column, date_column])
         if isinstance(seasonal_period, list):
@@ -52,6 +59,12 @@ class Optimize:
         #     ar_lags = list(np.arange(1, 13))
         self.ar_lags = ar_lags
         self.metric= metric
+        self.scale_types = scale_types
+        self.min_bagging_pct = min_bagging_pct
+        self.max_bagging_pct = max_bagging_pct
+        self.min_feature_fraction = min_feature_fraction
+        self.max_n_basis = max_n_basis
+        self.categorical_columns = categorical_columns
 
     # def logic_layer(self):
     #     n_samples = len(y)
@@ -64,33 +77,40 @@ class Optimize:
         df['len'] = df.groupby(id_column)[self.date_column].transform('size')
         df['test_split'] = ((df['test_split'] - self.test_size > self.test_size) & (df['test_split'] > df['len'] - self.test_size))
         self.train_df = df[df['test_split'] == False]
+        # self.train_df[self.date_column] = pd.to_datetime(self.train_df[self.date_column]).dt.
         self.test_df = df[df['test_split'] == True]
 
     def scorer(self, params, metric):
         scores = []
         # for train_index, test_index in cv_splits:
-        try:
-            model_obj = Forecaster()
-            model_obj.fit(self.train_df,
-                          target_column=self.target_column,
-                          date_column=self.date_column,
-                          id_column=self.id_column,
-                          freq=self.freq,
-                          **params)
-            predicted = model_obj.predict(self.test_size)
-            self.predicted = predicted
-            assert len(predicted) == len(self.test_df), 'Predicted not the same size as test set'
-    
-            if any(np.isnan(predicted['LGBMRegressor'])):
-                scores.append(np.inf)
-            else:
-                self.cv_df = self.test_df[[self.id_column, self.date_column, self.target_column]].merge(predicted, on=[self.id_column, self.date_column])
-                if metric == 'mse':
-                    scores.append(mean_squared_error(self.cv_df[self.target_column].values, self.cv_df['LGBMRegressor'].values))
-                elif metric == 'smape':
-                    scores.append(self.cv_df.groupby(self.id_column).apply(grouped_smape, self.target_column))
-        except:
+        # try:
+        print(params)
+        model_obj = Forecaster()
+        model_obj.fit(self.train_df,
+                      target_column=self.target_column,
+                      date_column=self.date_column,
+                      id_column=self.id_column,
+                      freq=self.freq,
+                      categorical_columns=self.categorical_columns,
+                      **params)
+        predicted = model_obj.predict(self.test_size)
+        self.predicted = predicted
+        if len(predicted) != len(self.test_df):
+            print('Predicted not the same size as test set')
+
+        if any(np.isnan(predicted['LGBMRegressor'])):
             scores.append(np.inf)
+        else:
+            # predicted[self.date_column] = predicted[self.date_column].dt.tz_localize(None)
+            self.test_df[self.date_column] = self.test_df[self.date_column].dt.tz_localize(None)
+            self.cv_df = self.test_df[[self.id_column, self.date_column, self.target_column]].merge(predicted, on=[self.id_column, self.date_column])
+            if metric == 'mse':
+                scores.append(mean_squared_error(self.cv_df[self.target_column].values, self.cv_df['LGBMRegressor'].values))
+            elif metric == 'smape':
+                scores.append(self.cv_df.groupby(self.id_column).apply(grouped_smape, self.target_column))
+        # except Exception as e:
+        #         scores.append(np.inf)
+        #         print(f'ERROR WHILE TUNING: {e}')
         return np.mean(scores)
 
 
@@ -100,13 +120,13 @@ class Optimize:
             'lambda_l1': trial.suggest_float('lambda_l1', 1e-8, 10.0),
             'lambda_l2': trial.suggest_float('lambda_l2', 1e-8, 10.0),
             'num_leaves': trial.suggest_int('num_leaves', 2, 512),
-            'feature_fraction': trial.suggest_float('feature_fraction', 0.1, 1.0),
-            'bagging_fraction': trial.suggest_float('bagging_fraction', 0.1, 1.0),
+            'feature_fraction': trial.suggest_float('feature_fraction', self.min_feature_fraction, 1.0),
+            'bagging_fraction': trial.suggest_float('bagging_fraction', self.min_bagging_pct, self.max_bagging_pct),
             'bagging_freq': trial.suggest_int('bagging_freq', 0, 15),
             'min_child_samples': trial.suggest_int('min_child_samples', 1, 100),
             "use_id": trial.suggest_categorical("use_id", [True, False]),
             "objective": trial.suggest_categorical("objective", ['regression', 'regression_l1']),
-            "n_basis": trial.suggest_int("n_basis", 0, 25),
+            "n_basis": trial.suggest_int("n_basis", 0, self.max_n_basis),
             "differences": trial.suggest_categorical("differences", [None, 1]),
             "decay": trial.suggest_categorical("decay", [-1,
                                                          .05,
@@ -116,14 +136,7 @@ class Optimize:
                                                          .75,
                                                          .9,
                                                          .99]),
-            "scale_type": trial.suggest_categorical("scale_type", ['log',
-                                                                   'standard',
-                                                                    'minmax',
-                                                                   # 'maxabs',
-                                                                   # 'robust',
-                                                                   # 'boxcox',
-                                                                   'robust_boxcox',
-                                                                   'none']),
+            "scale_type": trial.suggest_categorical("scale_type", self.scale_types),
         }
         if self.seasonal_period:
             params.update({'seasonal_period': trial.suggest_categorical("seasonal_period", [None, self.seasonal_period])})
@@ -146,6 +159,8 @@ class Optimize:
         best_params = study.best_params
         if best_params['lags'] == 1:
             best_params.update({'lags': [study.best_params['lags']]})
+        elif isinstance(best_params['lags'], list):
+            pass
         else:
             best_params.update({'lags': list(range(1, best_params['lags']))})
         return best_params, study

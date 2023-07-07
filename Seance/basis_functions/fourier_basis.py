@@ -18,7 +18,7 @@ def get_future_fourier(length, forecast_horizon, seasonal_period, fourier_order)
     t = np.arange(1, length + 1 + forecast_horizon).reshape(-1, 1)
     x = x * t
     fourier_series = np.concatenate((np.cos(x), np.sin(x)), axis=1)
-    return fourier_series[-forecast_horizon:]
+    return fourier_series
 
 #%%
 if __name__ == '__main__':
