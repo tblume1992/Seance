@@ -248,5 +248,3 @@ class Forecaster:
                             max_num_features=max_num_features)
         return
 
-
-

@@ -33,9 +33,9 @@ class Optimize:
                  max_n_estimators=500,
                  ar_lags=None,
                  scale_types=['log','standard','minmax','robust_boxcox','none'],
-                 min_bagging_pct=.1,
+                 min_bagging_pct=.6,
                  max_bagging_pct=1.0,
-                 min_feature_fraction=.1,
+                 min_feature_fraction=.6,
                  max_n_basis=25,
                  timeout=None):
         self.df = df.sort_values([id_column, date_column])
@@ -83,34 +83,34 @@ class Optimize:
     def scorer(self, params, metric):
         scores = []
         # for train_index, test_index in cv_splits:
-        # try:
-        print(params)
-        model_obj = Forecaster()
-        model_obj.fit(self.train_df,
-                      target_column=self.target_column,
-                      date_column=self.date_column,
-                      id_column=self.id_column,
-                      freq=self.freq,
-                      categorical_columns=self.categorical_columns,
-                      **params)
-        predicted = model_obj.predict(self.test_size)
-        self.predicted = predicted
-        if len(predicted) != len(self.test_df):
-            print('Predicted not the same size as test set')
-
-        if any(np.isnan(predicted['LGBMRegressor'])):
-            scores.append(np.inf)
-        else:
-            # predicted[self.date_column] = predicted[self.date_column].dt.tz_localize(None)
-            self.test_df[self.date_column] = self.test_df[self.date_column].dt.tz_localize(None)
-            self.cv_df = self.test_df[[self.id_column, self.date_column, self.target_column]].merge(predicted, on=[self.id_column, self.date_column])
-            if metric == 'mse':
-                scores.append(mean_squared_error(self.cv_df[self.target_column].values, self.cv_df['LGBMRegressor'].values))
-            elif metric == 'smape':
-                scores.append(self.cv_df.groupby(self.id_column).apply(grouped_smape, self.target_column))
-        # except Exception as e:
-        #         scores.append(np.inf)
-        #         print(f'ERROR WHILE TUNING: {e}')
+        try:
+            # print(params)
+            model_obj = Forecaster()
+            model_obj.fit(self.train_df,
+                          target_column=self.target_column,
+                          date_column=self.date_column,
+                          id_column=self.id_column,
+                          freq=self.freq,
+                          categorical_columns=self.categorical_columns,
+                          **params)
+            predicted = model_obj.predict(self.test_size)
+            self.predicted = predicted
+            if len(predicted) != len(self.test_df):
+                print('Predicted not the same size as test set')
+    
+            if any(np.isnan(predicted['LGBMRegressor'])):
+                scores.append(np.inf)
+            else:
+                # predicted[self.date_column] = predicted[self.date_column].dt.tz_localize(None)
+                self.test_df[self.date_column] = self.test_df[self.date_column].dt.tz_localize(None)
+                self.cv_df = self.test_df[[self.id_column, self.date_column, self.target_column]].merge(predicted, on=[self.id_column, self.date_column])
+                if metric == 'mse':
+                    scores.append(mean_squared_error(self.cv_df[self.target_column].values, self.cv_df['LGBMRegressor'].values))
+                elif metric == 'smape':
+                    scores.append(self.cv_df.groupby(self.id_column).apply(grouped_smape, self.target_column))
+        except Exception as e:
+                scores.append(np.inf)
+                print(f'ERROR WHILE TUNING: {e}')
         return np.mean(scores)
 
 
@@ -152,10 +152,16 @@ class Optimize:
         score = self.scorer(params, self.metric)
         return score
 
+    def callback(study, trial):
+        if len(study.get_trials()) == 2:
+            study.stop()
+
     def fit(self, seed):
         self.get_splits(self.df, self.id_column)
         study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed))
-        study.optimize(self.objective, n_trials=self.n_trials)
+        study.optimize(self.objective,
+                       n_trials=self.n_trials,
+                       timeout=self.timeout)
         best_params = study.best_params
         if best_params['lags'] == 1:
             best_params.update({'lags': [study.best_params['lags']]})
@@ -168,17 +174,34 @@ class Optimize:
 #%%
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
+    # opt = Optimize(train_df[['V', 'Datetime', 'ID']],
+    #             target_column='V',
+    #             date_column='Datetime',
+    #             id_column='ID',
+    #             freq='H',
+    #             metric='smape',
+    #             seasonal_period=24,
+    #             test_size=72,
+    #             n_trials=50)
+    # best_params, study = opt.fit(seed=1)
+    import time
+    tic = time.perf_counter()
     opt = Optimize(train_df[['V', 'Datetime', 'ID']],
                 target_column='V',
                 date_column='Datetime',
                 id_column='ID',
                 freq='W',
-                seasonal_period=52,
+                metric='smape',
+                seasonal_period=None,
+                # ar_lags=[list(range(1, 4))],
                 test_size=26,
-                ar_lags=[list(range(1, 53))],
-                n_trials=3)
-    study = opt.fit(seed=1)
+                n_trials=10,
+                timeout=60)
+    best_params, study = opt.fit(seed=1)
+    toc = time.perf_counter()
+    print(toc - tic)
 
+#%%
     look = opt.test_df
     look2 = opt.predicted
     merged = opt.test_df.merge(opt.predicted, on=['ID', 'Datetime'])

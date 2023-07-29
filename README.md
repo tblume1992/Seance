@@ -1,4 +1,4 @@
-## Seánce v0.0.1
+## Seánce v0.0.5
 
 A simple wrapper around Nixtla's MLForecast aimed at streamlining plug-and-play forecasting.
 
