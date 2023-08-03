@@ -6,7 +6,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="Seance",
-    version="0.0.5",
+    version="0.0.6",
     author="Tyler Blume",
     url="https://github.com/tblume1992/Seance",
     long_description=long_description,

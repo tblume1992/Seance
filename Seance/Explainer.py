@@ -8,7 +8,7 @@ sns.set_style('darkgrid')
 
 def rename_column(column_name):
     if 'basis' in column_name:
-        return 'Trend'
+        return 'LBF'
     if 'fourier' in column_name:
         return 'Seasonality'
     if 'ar_' in column_name:
@@ -58,3 +58,5 @@ if __name__ == '__main__':
     exp = Explainer(seance_obj=seance, id_column='ID', date_column='Datetime')
     exp.explain(seance.processed_df, seance.pred_X)
     model_obj = seance.mlforecast.models_['LGBMRegressor']
+
+    look = seance.processed_df

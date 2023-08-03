@@ -14,8 +14,8 @@ from Seance.Forecaster import Forecaster
 @njit
 def smape(A, F):
     return 100/len(A) * np.sum(2 * np.abs(F - A) / (0.0001 + (np.abs(A) + np.abs(F))))
-def grouped_smape(df, target_column):
-    return smape(df[target_column].values, df['LGBMRegressor'].values)
+def grouped_smape(df, target_column, predicted_column):
+    return smape(df[target_column].values, df[predicted_column].values)
 
 class Optimize:
     def __init__(self,
@@ -37,6 +37,7 @@ class Optimize:
                  max_bagging_pct=1.0,
                  min_feature_fraction=.6,
                  max_n_basis=25,
+                 model='lightgbm',
                  timeout=None):
         self.df = df.sort_values([id_column, date_column])
         if isinstance(seasonal_period, list):
@@ -52,6 +53,7 @@ class Optimize:
         self.id_column = id_column
         self.timeout = timeout
         self.freq = freq
+        self.model = model
         self.max_n_estimators = max_n_estimators
         # if ar_lags is None and seasonal_period is not None:
         #     ar_lags = list(np.arange(1, self.max_pulse + 1))
@@ -84,7 +86,6 @@ class Optimize:
         scores = []
         # for train_index, test_index in cv_splits:
         try:
-            # print(params)
             model_obj = Forecaster()
             model_obj.fit(self.train_df,
                           target_column=self.target_column,
@@ -92,22 +93,23 @@ class Optimize:
                           id_column=self.id_column,
                           freq=self.freq,
                           categorical_columns=self.categorical_columns,
+                          model=self.model,
                           **params)
             predicted = model_obj.predict(self.test_size)
             self.predicted = predicted
             if len(predicted) != len(self.test_df):
                 print('Predicted not the same size as test set')
     
-            if any(np.isnan(predicted['LGBMRegressor'])):
+            if any(np.isnan(predicted[model_obj.pred_col])):
                 scores.append(np.inf)
             else:
                 # predicted[self.date_column] = predicted[self.date_column].dt.tz_localize(None)
                 self.test_df[self.date_column] = self.test_df[self.date_column].dt.tz_localize(None)
                 self.cv_df = self.test_df[[self.id_column, self.date_column, self.target_column]].merge(predicted, on=[self.id_column, self.date_column])
                 if metric == 'mse':
-                    scores.append(mean_squared_error(self.cv_df[self.target_column].values, self.cv_df['LGBMRegressor'].values))
+                    scores.append(mean_squared_error(self.cv_df[self.target_column].values, self.cv_df[model_obj.pred_col].values))
                 elif metric == 'smape':
-                    scores.append(self.cv_df.groupby(self.id_column).apply(grouped_smape, self.target_column))
+                    scores.append(self.cv_df.groupby(self.id_column).apply(grouped_smape, self.target_column, model_obj.pred_col))
         except Exception as e:
                 scores.append(np.inf)
                 print(f'ERROR WHILE TUNING: {e}')
@@ -116,16 +118,7 @@ class Optimize:
 
     def objective(self, trial):
         params = {
-            "n_estimators": trial.suggest_int(name="n_estimators", low=50, high=self.max_n_estimators),
-            'lambda_l1': trial.suggest_float('lambda_l1', 1e-8, 10.0),
-            'lambda_l2': trial.suggest_float('lambda_l2', 1e-8, 10.0),
-            'num_leaves': trial.suggest_int('num_leaves', 2, 512),
-            'feature_fraction': trial.suggest_float('feature_fraction', self.min_feature_fraction, 1.0),
-            'bagging_fraction': trial.suggest_float('bagging_fraction', self.min_bagging_pct, self.max_bagging_pct),
-            'bagging_freq': trial.suggest_int('bagging_freq', 0, 15),
-            'min_child_samples': trial.suggest_int('min_child_samples', 1, 100),
             "use_id": trial.suggest_categorical("use_id", [True, False]),
-            "objective": trial.suggest_categorical("objective", ['regression', 'regression_l1']),
             "n_basis": trial.suggest_int("n_basis", 0, self.max_n_basis),
             "differences": trial.suggest_categorical("differences", [None, 1]),
             "decay": trial.suggest_categorical("decay", [-1,
@@ -138,6 +131,20 @@ class Optimize:
                                                          .99]),
             "scale_type": trial.suggest_categorical("scale_type", self.scale_types),
         }
+        if self.model == 'lightgbm':
+            params.update({"n_estimators": trial.suggest_int(name="n_estimators", low=50, high=self.max_n_estimators),
+                           'min_child_samples': trial.suggest_int('min_child_samples', 1, 100),
+                            'lambda_l1': trial.suggest_float('lambda_l1', 1e-8, 10.0),
+                            'lambda_l2': trial.suggest_float('lambda_l2', 1e-8, 10.0),
+                            'num_leaves': trial.suggest_int('num_leaves', 2, 512),
+                            'feature_fraction': trial.suggest_float('feature_fraction', self.min_feature_fraction, 1.0),
+                            'bagging_fraction': trial.suggest_float('bagging_fraction', self.min_bagging_pct, self.max_bagging_pct),
+                            'bagging_freq': trial.suggest_int('bagging_freq', 0, 15),
+                            "objective": trial.suggest_categorical("objective", ['regression', 'regression_l1'])
+            })
+        elif self.model == 'ridge':
+            params.update({"alpha": trial.suggest_float("alpha", 1e-8, 1000.0)
+                           })
         if self.seasonal_period:
             params.update({'seasonal_period': trial.suggest_categorical("seasonal_period", [None, self.seasonal_period])})
         if self.ar_lags is not None:
@@ -190,13 +197,14 @@ if __name__ == '__main__':
                 target_column='V',
                 date_column='Datetime',
                 id_column='ID',
-                freq='W',
+                freq='M',
                 metric='smape',
-                seasonal_period=None,
+                seasonal_period=12,
+                model='lightgbm',
                 # ar_lags=[list(range(1, 4))],
                 test_size=26,
-                n_trials=10,
-                timeout=60)
+                # n_trials=10,
+                timeout=60*60*3)
     best_params, study = opt.fit(seed=1)
     toc = time.perf_counter()
     print(toc - tic)

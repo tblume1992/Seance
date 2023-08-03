@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
+from sklearn.linear_model import LinearRegression, Ridge
 from mlforecast import MLForecast
 from Seance.Builder import PreProcess
 from Seance.basis_functions.fourier_basis import get_fourier_series, get_future_fourier
@@ -37,6 +38,7 @@ class Forecaster:
             id_column,
             date_column,
             freq,
+            model='lightgbm',
             alpha=None,
             time_exogenous=None,
             id_exogenous=None,
@@ -87,6 +89,7 @@ class Forecaster:
         if scale_type == 'none':
             scale=False
         self.scale = scale
+        self.model = model
         self.seasonal_period = seasonal_period
         self.fourier_order = fourier_order
         self.date_column = date_column
@@ -147,22 +150,6 @@ class Forecaster:
         if self.seasonal_period is not None:
             self.processed_df = self.processed_df.merge(seasonal_df, on=date_column)
         self.processed_df['cat_id_col'] = self.processed_df['Seance ID'].copy()
-        lgb_params = {'sample_weights': sample_weights,
-                      'metric': metric,
-                      'learning_rate':learning_rate,
-                      'min_child_samples':min_child_samples,
-                      'num_leaves':num_leaves,
-                      'n_estimators':n_estimators,
-                      'learning_rate':learning_rate,
-                      'num_threads': num_threads,
-                       'bagging_freq': bagging_freq,
-                      'verbose': verbose,
-                        'lambda_l1': lambda_l1,
-                        'lambda_l2': lambda_l2,
-                        'bagging_fraction': bagging_fraction,
-                        'feature_fraction': feature_fraction,
-                        'objective': objective,
-                        }
         if categorical_columns is not None:
             forecast_columns += categorical_columns
             for column in categorical_columns:
@@ -171,25 +158,58 @@ class Forecaster:
             forecast_columns += [i for i in list(seasonal_df.columns) if i != date_column]
         if self.n_basis is not None and self.n_basis:
             forecast_columns += list(basis.columns)
-        self.mlforecast = MLForecast(models=[lgb.LGBMRegressor(**lgb_params)],
-                                     freq=freq,
-                                     lags=lags,
-                                     differences=differences,
-                                     **kwargs)
-
+        if self.model == 'lightgbm':
+            lgb_params = {'sample_weights': sample_weights,
+                          'metric': metric,
+                          'learning_rate':learning_rate,
+                          'min_child_samples':min_child_samples,
+                          'num_leaves':num_leaves,
+                          'n_estimators':n_estimators,
+                          'learning_rate':learning_rate,
+                          'num_threads': num_threads,
+                           'bagging_freq': bagging_freq,
+                          'verbose': verbose,
+                            'lambda_l1': lambda_l1,
+                            'lambda_l2': lambda_l2,
+                            'bagging_fraction': bagging_fraction,
+                            'feature_fraction': feature_fraction,
+                            'objective': objective,
+                            }
+            self.mlforecast = MLForecast(models=[lgb.LGBMRegressor(**lgb_params)],
+                                         freq=freq,
+                                         lags=lags,
+                                         differences=differences,
+                                         **kwargs)
+            self.pred_col = 'LGBMRegressor'
+        elif self.model == 'linear_regression':
+            self.mlforecast = MLForecast(models=[LinearRegression()],
+                                         freq=freq,
+                                         lags=lags,
+                                         differences=differences,
+                                         **kwargs)
+            self.pred_col = 'LinearRegression'
+        elif self.model == 'ridge':
+            if alpha is None:
+                alpha = 1
+            self.mlforecast = MLForecast(models=[Ridge(alpha=alpha)],
+                                         freq=freq,
+                                         lags=lags,
+                                         differences=differences,
+                                         **kwargs)
+            self.pred_col = 'Ridge'
         fitted = self.mlforecast.fit(self.processed_df[forecast_columns],
                                     id_col='Seance ID',
                                     time_col=date_column,
                                     target_col=target_column,
                                     static_features=categorical_columns)
-        self.model_obj = fitted.models_['LGBMRegressor']
+        self.model_obj = fitted.models_[self.pred_col]
         return fitted
 
     def inverse_transform(self, df):
         seance_id = df['Seance ID'].iloc[0]
-        unscaled = self.processor._transformers[seance_id](df['LGBMRegressor'].values)
+        unscaled = self.processor._transformers[seance_id](df[self.pred_col].values)
         unscaled = np.array(unscaled).reshape(-1)
-        df['LGBMRegressor'] = unscaled
+        df[self.pred_col] = unscaled
         return df
 
     def predict(self, forecast_horizon):
@@ -237,14 +257,15 @@ class Forecaster:
                                     on='Seance ID')
         if self.scale:
             predicted = predicted.groupby('Seance ID').apply(self.inverse_transform)
-        predicted['LGBMRegressor'] = predicted['LGBMRegressor'].clip(lower=self.floor)
+        predicted[self.pred_col] = predicted[self.pred_col].clip(lower=self.floor)
         predicted = predicted.sort_values([self.id_column, self.date_column])
-        if any(np.isnan(predicted['LGBMRegressor'])):
+        if any(np.isnan(predicted[self.pred_col])):
             print('Nan found when Inverse Transforming, use a more stable transformer such as "standard"')
         return predicted
 
     def plot_importance(self, max_num_features=20):
-        lgb.plot_importance(self.mlforecast.models_['LGBMRegressor'],
+        lgb.plot_importance(self.mlforecast.models_[self.pred_col],
                             max_num_features=max_num_features)
         return
+
 
