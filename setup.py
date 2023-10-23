@@ -6,19 +6,22 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="Seance",
-    version="0.0.6",
+    version="0.1.1",
     author="Tyler Blume",
     url="https://github.com/tblume1992/Seance",
     long_description=long_description,
     long_description_content_type="text/markdown",
     description = "A Wrapper around MLForecast.",
-    author_email = 'tblume@mail.USF.edu', 
+    author_email = 't-blume@hotmail.com',
     keywords = ['forecasting', 'time series', 'lightgbm', 'mlforecast'],
       install_requires=[           
                         'numpy',
                         'pandas',
                         'optuna',
-                        'mlforecast'
+                        'mlforecast',
+                        'lightgbm',
+                        'catboost',
+                        'xgboost'
                         ],
     packages=setuptools.find_packages(),
     classifiers=[

@@ -2,6 +2,8 @@
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
+import xgboost as xgb
+from catboost import Pool, CatBoostRegressor
 from sklearn.linear_model import LinearRegression, Ridge
 from mlforecast import MLForecast
 from Seance.Builder import PreProcess
@@ -40,6 +42,9 @@ class Forecaster:
             freq,
             model='lightgbm',
             alpha=None,
+            depth=None,
+            colsample_bylevel=None,
+            min_data_in_leaf=1,
             time_exogenous=None,
             id_exogenous=None,
             id_feature_columns=None,
@@ -51,14 +56,18 @@ class Forecaster:
             decay=-1,
             lags=None,
             use_id=True,
+            max_depth=6,
             ma=None,
             fourier_order=10,
             seasonal_weights=None,
             weighted=True,
             n_basis=None,
+            min_child_weight=1,
             seasonal_period=None,
             test_size=None,
             bagging_freq=1,
+            subsample=1,
+            colsample_bytree=1,
             linear_trend='auto',
             objective='regression',
             metric='rmse',
@@ -79,6 +88,8 @@ class Forecaster:
             ts_features=False,
             sample_weights=None,
             num_threads=1,
+            reg_lambda=1,
+            reg_alpha=0,
             verbose=-1,
             lambda_l1=0.0,
             lambda_l2=0.0,
@@ -119,7 +130,7 @@ class Forecaster:
                 column_names = [f'{i}_fourier_{j+1}' for j in range(2 * self.fourier_order)]
                 fourier_basis = pd.DataFrame(fourier_basis, columns=column_names)
                 seasonal_df.append(fourier_basis)
-            seasonal_df = pd.concat(seasonal_df)
+            seasonal_df = pd.concat(seasonal_df, axis=1)
             seasonal_df[date_column] = self.time_periods.values
             seasonal_df[date_column] = pd.to_datetime(seasonal_df[date_column]).dt.tz_localize(None)
             max_period = max(self.seasonal_period)
@@ -181,6 +192,57 @@ class Forecaster:
                                          differences=differences,
                                          **kwargs)
             self.pred_col = 'LGBMRegressor'
+        elif self.model == 'xgboost':
+            xgb_params = {'sample_weights': sample_weights,
+                          'metric': metric,
+                          'learning_rate':learning_rate,
+                          'n_estimators':n_estimators,
+                          'colsample_bytree':colsample_bytree,
+                          'max_depth':max_depth,
+                          'subsample':subsample,
+                          'min_child_weight': min_child_weight,
+                           'bagging_freq': bagging_freq,
+                            'reg_lambda': reg_lambda,
+                            'reg_alpha': reg_alpha,
+                            'objective': 'reg:squarederror',
+                            'verbosity': max(0, verbose),
+                            }
+            if use_id:
+                self.mlforecast = MLForecast(models=[xgb.XGBRegressor(tree_method="hist", enable_categorical=True, **xgb_params)],
+                                             freq=freq,
+                                             lags=lags,
+                                             differences=differences,
+                                             **kwargs)
+            else:
+                self.mlforecast = MLForecast(models=[xgb.XGBRegressor(**xgb_params)],
+                                             freq=freq,
+                                             lags=lags,
+                                             differences=differences,
+                                             **kwargs)
+            self.pred_col = 'XGBRegressor'
+        elif self.model == 'catboost':
+            if metric == 'rmse':
+                metric = 'RMSE'
+            cb_params = {'loss_function': metric,
+                          'learning_rate':learning_rate,
+                          'iterations':n_estimators,
+                          'colsample_bylevel':colsample_bylevel,
+                          'depth':depth,
+                          'subsample':subsample,
+                          'min_data_in_leaf': min_data_in_leaf,
+                          'cat_features': categorical_columns
+                           # 'bagging_freq': bagging_freq,
+                           #  'reg_lambda': reg_lambda,
+                           #  'reg_alpha': reg_alpha,
+                           #  # 'objective': 'reg:squarederror',
+                           #  'verbosity': max(0, verbose),
+                            }
+            self.mlforecast = MLForecast(models=[CatBoostRegressor(**cb_params)],
+                                         freq=freq,
+                                         lags=lags,
+                                         differences=differences,
+                                         **kwargs)
+            self.pred_col = 'CatBoostRegressor'
         elif self.model == 'linear_regression':
             self.mlforecast = MLForecast(models=[LinearRegression()],
                                          freq=freq,
@@ -240,7 +302,7 @@ class Forecaster:
                 column_names = [f'{i}_fourier_{j+1}' for j in range(2 * self.fourier_order)]
                 fourier_basis = pd.DataFrame(fourier_basis, columns=column_names).astype(float)
                 seasonal_df.append(fourier_basis)
-            seasonal_df = pd.concat(seasonal_df)
+            seasonal_df = pd.concat(seasonal_df, axis=1)
             seasonal_df[self.date_column] = full_dates.values
             pred_X = pred_X.merge(seasonal_df, on=self.date_column)
         if self.n_basis is not None and self.n_basis:

@@ -41,10 +41,18 @@ class Optimize:
                  timeout=None):
         self.df = df.sort_values([id_column, date_column])
         if isinstance(seasonal_period, list):
-            self.max_pulse = max(seasonal_period)
+            maxes = []
+            for i in seasonal_period:
+                if isinstance(i, list):
+                    maxes.append(max(i))
+                else:
+                    maxes.append(i)
+            self.max_pulse = max(maxes)
+            self.seasonal_period = seasonal_period
         else:
             self.max_pulse = seasonal_period
-        self.seasonal_period = seasonal_period
+            self.seasonal_period = [seasonal_period]
+
         self.n_folds = n_folds
         self.test_size = test_size
         self.n_trials = n_trials
@@ -111,8 +119,8 @@ class Optimize:
                 elif metric == 'smape':
                     scores.append(self.cv_df.groupby(self.id_column).apply(grouped_smape, self.target_column, model_obj.pred_col))
         except Exception as e:
-                scores.append(np.inf)
-                print(f'ERROR WHILE TUNING: {e}')
+                    scores.append(np.inf)
+                    print(f'ERROR WHILE TUNING: {e}')
         return np.mean(scores)
 
 
@@ -142,11 +150,42 @@ class Optimize:
                             'bagging_freq': trial.suggest_int('bagging_freq', 0, 15),
                             "objective": trial.suggest_categorical("objective", ['regression', 'regression_l1'])
             })
+
+        elif self.model == 'xgboost':
+
+            params.update({"n_estimators": trial.suggest_int(name="n_estimators", low=50, high=self.max_n_estimators),
+                           'max_depth': trial.suggest_int('max_depth', 1, 10),
+                            'learning_rate': trial.suggest_float('learning_rate', 1e-3, .1, log=True),
+                            'subsample': trial.suggest_float('subsample', .1, 1.0),
+                            'bagging_freq': trial.suggest_float('bagging_freq', .1, 1.0),
+                            'colsample_bytree': trial.suggest_float('colsample_bytree', .1, 1.0),
+                            'min_data_in_leaf': trial.suggest_float('min_data_in_leaf', 1, 100),
+                            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
+                            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
+                            'min_child_weight': trial.suggest_int('min_child_weight', 2, 10),
+            })
+
+        elif self.model == 'catboost':
+            params.update({"n_estimators": trial.suggest_int(name="n_estimators", low=50, high=self.max_n_estimators),
+                           'depth': trial.suggest_int('depth', 1, 10),
+                            'learning_rate': trial.suggest_float('learning_rate', 1e-3, .1, log=True),
+                            'subsample': trial.suggest_float('subsample', .1, 1.0),
+                            'colsample_bylevel': trial.suggest_float('colsample_bylevel', .1, 1.0),
+                            'min_data_in_leaf': trial.suggest_float('min_data_in_leaf', 1, 100),
+            })
+
         elif self.model == 'ridge':
             params.update({"alpha": trial.suggest_float("alpha", 1e-8, 1000.0)
                            })
         if self.seasonal_period:
-            params.update({'seasonal_period': trial.suggest_categorical("seasonal_period", [None, self.seasonal_period])})
+            if any(isinstance(period, list) for period in self.seasonal_period):
+                choices = self.seasonal_period.copy()
+                choices.append(None)
+                params.update({'seasonal_period': trial.suggest_categorical("seasonal_period", choices)})
+            else:
+                params.update({'seasonal_period': trial.suggest_categorical("seasonal_period", [None, self.seasonal_period])})
+
+            params.update({'fourier_order': trial.suggest_int("fourier_order", 3, 25)})
         if self.ar_lags is not None:
             params.update({'lags': trial.suggest_categorical("lags", self.ar_lags)})
         else:
@@ -156,6 +195,7 @@ class Optimize:
             else:
                 params.update({'lags': trial.suggest_int(name="lags", low=1, high=13)})
                 params['lags'] = list(range(1, params['lags']))
+
         score = self.scorer(params, self.metric)
         return score
 
@@ -176,6 +216,7 @@ class Optimize:
             pass
         else:
             best_params.update({'lags': list(range(1, best_params['lags']))})
+        best_params.update({'model': self.model})
         return best_params, study
 
 #%%
@@ -197,17 +238,16 @@ if __name__ == '__main__':
                 target_column='V',
                 date_column='Datetime',
                 id_column='ID',
-                freq='M',
+                freq='W',
                 metric='smape',
-                seasonal_period=12,
-                model='lightgbm',
-                # ar_lags=[list(range(1, 4))],
+                model='xgboost',
+                seasonal_period=[52],scale_types=['none', 'standard'],
                 test_size=26,
-                # n_trials=10,
-                timeout=60*60*3)
+                timeout=200)
     best_params, study = opt.fit(seed=1)
     toc = time.perf_counter()
     print(toc - tic)
+
 
 #%%
     look = opt.test_df
